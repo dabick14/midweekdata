@@ -3,7 +3,7 @@ name: Update Midweek Data
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 8 * * 3'
+    - cron: '0 18 * * 6'
 
 permissions:
   contents: write
