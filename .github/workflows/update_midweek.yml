@@ -1,0 +1,52 @@
+name: Update Midweek Data
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 8 * * 3'
+
+permissions:
+  contents: write
+
+jobs:
+  update-midweek-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests openpyxl
+
+      - name: Run updater script
+        env:
+          FLC_EMAIL: ${{ secrets.FLC_EMAIL }}
+          FLC_PASSWORD: ${{ secrets.FLC_PASSWORD }}
+          STREAM_ID_1: ${{ secrets.STREAM_ID_1 }}
+          STREAM_ID_2: ${{ secrets.STREAM_ID_2 }}
+          STREAM_ID_3: ${{ secrets.STREAM_ID_3 }}
+        run: python update_midweek_data.py --input Midweek_Data.xlsx --output Midweek_Data_updated.xlsx
+
+      - name: Replace source workbook with updated workbook
+        run: |
+          if [ -f Midweek_Data_updated.xlsx ]; then
+            mv Midweek_Data_updated.xlsx Midweek_Data.xlsx
+          fi
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Midweek_Data.xlsx
+          if git diff --cached --quiet; then
+            echo "No workbook changes to commit"
+            exit 0
+          fi
+          git commit -m "chore: update midweek data workbook"
+          git push
