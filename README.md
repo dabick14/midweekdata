@@ -8,6 +8,7 @@ Generated detail sheets use this column layout: Governorship, Governor, No. Of B
 
 - `update_midweek_data.py`: Main script that logs in, queries stream governorships, creates a new workbook, creates one sheet per council name, creates a Summary sheet, and writes `Midweek_Data_updated.xlsx`.
 - `.github/workflows/update_midweek.yml`: Weekly GitHub Actions workflow (Wednesdays, 08:00 UTC) plus manual trigger.
+- `.github/workflows/update_midweek.yml`: Weekly GitHub Actions workflow (Saturdays, 18:00 UTC) plus manual trigger.
 
 ## Prerequisites
 
@@ -61,6 +62,11 @@ Note: GraphQL requests are sent with `Authorization: Bearer <accessToken>`.
    - `STREAM_ID_1`
    - `STREAM_ID_2`
    - `STREAM_ID_3`
-2. Enable actions and run the workflow manually once via `workflow_dispatch` to validate.
+   - `GOOGLE_SERVICE_ACCOUNT_JSON`
+   - `GOOGLE_DRIVE_FOLDER_ID`
+2. Set `GOOGLE_SERVICE_ACCOUNT_JSON` to the full JSON contents of your Google service account key.
+3. Set `GOOGLE_DRIVE_FOLDER_ID` to the destination Google Drive folder ID.
+4. Share that Google Drive folder with the service account email as an editor.
+5. Enable actions and run the workflow manually once via `workflow_dispatch` to validate.
 
-The scheduled workflow runs every Wednesday at 08:00 UTC and commits workbook updates back to the repository when changes are detected.
+The scheduled workflow runs every Saturday at 18:00 UTC, uploads a dated workbook copy to the configured Google Drive folder, and commits workbook updates back to the repository when changes are detected.

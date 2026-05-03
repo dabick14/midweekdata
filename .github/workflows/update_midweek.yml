@@ -22,7 +22,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests openpyxl
+        run: pip install requests openpyxl google-api-python-client google-auth
 
       - name: Run updater script
         env:
@@ -32,6 +32,50 @@ jobs:
           STREAM_ID_2: ${{ secrets.STREAM_ID_2 }}
           STREAM_ID_3: ${{ secrets.STREAM_ID_3 }}
         run: python update_midweek_data.py --input Midweek_Data.xlsx --output Midweek_Data_updated.xlsx
+
+      - name: Create dated workbook copy
+        if: ${{ hashFiles('Midweek_Data_updated.xlsx') != '' }}
+        run: |
+          DATED_FILE="Midweek_Data_$(date -u +%F).xlsx"
+          cp Midweek_Data_updated.xlsx "$DATED_FILE"
+          echo "DATED_FILE=$DATED_FILE" >> "$GITHUB_ENV"
+
+      - name: Upload dated workbook to Google Drive
+        if: ${{ hashFiles('Midweek_Data_updated.xlsx') != '' }}
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          DATED_FILE: ${{ env.DATED_FILE }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+
+          credentials_info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
+          folder_id = os.environ["GOOGLE_DRIVE_FOLDER_ID"]
+          file_name = os.environ["DATED_FILE"]
+
+          credentials = service_account.Credentials.from_service_account_info(
+              credentials_info,
+              scopes=["https://www.googleapis.com/auth/drive.file"],
+          )
+          service = build("drive", "v3", credentials=credentials)
+
+          metadata = {
+              "name": file_name,
+              "parents": [folder_id],
+          }
+          media = MediaFileUpload(
+              file_name,
+              mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          )
+          created = service.files().create(body=metadata, media_body=media, fields="id,name").execute()
+          print(f"Uploaded {created['name']} to Google Drive with file id {created['id']}")
+          PY
 
       - name: Replace source workbook with updated workbook
         run: |
