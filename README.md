@@ -66,7 +66,8 @@ Note: GraphQL requests are sent with `Authorization: Bearer <accessToken>`.
    - `GOOGLE_DRIVE_FOLDER_ID`
 2. Set `GOOGLE_SERVICE_ACCOUNT_JSON` to the full JSON contents of your Google service account key.
 3. Set `GOOGLE_DRIVE_FOLDER_ID` to the destination Google Drive folder ID.
-4. Share that Google Drive folder with the service account email as an editor.
-5. Enable actions and run the workflow manually once via `workflow_dispatch` to validate.
+4. Use a folder in a Shared Drive and share it with the service account email as Content manager (or Editor).
+5. Service accounts do not have personal Drive storage quota, so uploads to personal "My Drive" folders can fail with `storageQuotaExceeded`.
+6. Enable actions and run the workflow manually once via `workflow_dispatch` to validate.
 
 The scheduled workflow runs every Saturday at 18:00 UTC, uploads a dated workbook copy to the configured Google Drive folder, and commits workbook updates back to the repository when changes are detected.

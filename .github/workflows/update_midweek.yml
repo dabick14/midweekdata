@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write # REQUIRED: This allows the "handshake" with Google Cloud
 
 jobs:
   update-midweek-data:
@@ -15,6 +16,14 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # 1. NEW: Authenticate to Google Cloud using the WIF Pool we just built
+      - id: 'auth'
+        name: 'Authenticate to Google Cloud'
+        uses: 'google-github-actions/auth@v2'
+        with:
+          workload_identity_provider: 'projects/355623912921/locations/global/workloadIdentityPools/github-pool-v3/providers/github-provider'
+          service_account: 'github-deployer@psychic-nuance-495210-f1.iam.gserviceaccount.com'
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -43,26 +52,24 @@ jobs:
       - name: Upload dated workbook to Google Drive
         if: ${{ hashFiles('Midweek_Data_updated.xlsx') != '' }}
         env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
           DATED_FILE: ${{ env.DATED_FILE }}
         run: |
           python - <<'PY'
-          import json
           import os
-
-          from google.oauth2 import service_account
+          import google.auth
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
 
-          credentials_info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
+          # 2. UPDATED: No more JSON loading. We use "default()" credentials.
           folder_id = os.environ["GOOGLE_DRIVE_FOLDER_ID"]
           file_name = os.environ["DATED_FILE"]
 
-          credentials = service_account.Credentials.from_service_account_info(
-              credentials_info,
-              scopes=["https://www.googleapis.com/auth/drive.file"],
+          # This automatically finds the token from the "auth" step above
+          credentials, project = google.auth.default(
+              scopes=["https://www.googleapis.com/auth/drive.file"]
           )
+          
           service = build("drive", "v3", credentials=credentials)
 
           metadata = {
@@ -73,7 +80,16 @@ jobs:
               file_name,
               mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
           )
-          created = service.files().create(body=metadata, media_body=media, fields="id,name").execute()
+          created = (
+              service.files()
+              .create(
+                  body=metadata,
+                  media_body=media,
+                  fields="id,name",
+                  supportsAllDrives=True,
+              )
+              .execute()
+          )
           print(f"Uploaded {created['name']} to Google Drive with file id {created['id']}")
           PY
 
