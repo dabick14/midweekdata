@@ -60,10 +60,16 @@ jobs:
           import google.auth
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
+          from googleapiclient.errors import HttpError
 
           # 2. UPDATED: No more JSON loading. We use "default()" credentials.
-          folder_id = os.environ["GOOGLE_DRIVE_FOLDER_ID"]
+          folder_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "").strip()
           file_name = os.environ["DATED_FILE"]
+
+          if not folder_id:
+            raise RuntimeError(
+              "GOOGLE_DRIVE_FOLDER_ID is empty. Set the repository secret GOOGLE_DRIVE_FOLDER_ID."
+            )
 
           # This automatically finds the token from the "auth" step above
           credentials, project = google.auth.default(
@@ -71,6 +77,19 @@ jobs:
           )
           
           service = build("drive", "v3", credentials=credentials)
+
+          # Check folder accessibility first so failures are clearer.
+          try:
+            service.files().get(
+              fileId=folder_id,
+              fields="id,name,driveId",
+              supportsAllDrives=True,
+            ).execute()
+          except HttpError as exc:
+            raise RuntimeError(
+              "Cannot access GOOGLE_DRIVE_FOLDER_ID with current GitHub auth service account. "
+              "Confirm folder id is correct and shared with the auth service account."
+            ) from exc
 
           metadata = {
               "name": file_name,
