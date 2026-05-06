@@ -110,7 +110,7 @@ jobs:
 
           # This automatically finds the token from the "auth" step above
           credentials, project = google.auth.default(
-              scopes=["https://www.googleapis.com/auth/drive.file"]
+              scopes=["https://www.googleapis.com/auth/drive"]
           )
           
           service = build("drive", "v3", credentials=credentials)
