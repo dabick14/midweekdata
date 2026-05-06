@@ -49,6 +49,43 @@ jobs:
           cp Midweek_Data_updated.xlsx "$DATED_FILE"
           echo "DATED_FILE=$DATED_FILE" >> "$GITHUB_ENV"
 
+      - name: Debug Google Drive visibility
+        if: ${{ hashFiles('Midweek_Data_updated.xlsx') != '' }}
+        run: |
+          python - <<'PY'
+          import google.auth
+          from googleapiclient.discovery import build
+
+          credentials, _ = google.auth.default(
+            scopes=["https://www.googleapis.com/auth/drive.readonly"]
+          )
+          service = build("drive", "v3", credentials=credentials)
+
+          drives = service.drives().list(pageSize=20).execute().get("drives", [])
+          print(f"Visible shared drives: {len(drives)}")
+          for d in drives[:10]:
+            print(f"DRIVE id={d.get('id')} name={d.get('name')}")
+
+          items = (
+            service.files()
+            .list(
+              pageSize=20,
+              fields="files(id,name,mimeType,driveId)",
+              supportsAllDrives=True,
+              includeItemsFromAllDrives=True,
+              corpora="allDrives",
+            )
+            .execute()
+            .get("files", [])
+          )
+          print(f"Visible files/folders sample: {len(items)}")
+          for f in items[:10]:
+            print(
+              f"FILE id={f.get('id')} name={f.get('name')} "
+              f"type={f.get('mimeType')} driveId={f.get('driveId')}"
+            )
+          PY
+
       - name: Upload dated workbook to Google Drive
         if: ${{ hashFiles('Midweek_Data_updated.xlsx') != '' }}
         env:
