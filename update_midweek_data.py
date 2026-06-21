@@ -35,7 +35,7 @@ COLUMN_HEADERS = [
 
 GRAPHQL_QUERY = """
 query getStreamGovernorships($id: ID!) {
-  streams(where: {id: $id}) {
+  streams(where: {id: {eq: $id}}) {
     id
     name
     leader {
