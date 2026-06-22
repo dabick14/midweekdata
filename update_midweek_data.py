@@ -6,9 +6,9 @@ from __future__ import annotations
 import argparse
 import os
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
 from openpyxl import Workbook
@@ -52,39 +52,10 @@ query getStreamGovernorships($id: ID!) {
           fullName
         }
       }
-            bacentas {
-                aggregateServiceRecords(limit: 1, skip: 0) {
-                    id
-                    attendance
-                    income
-                    numberOfServices
-                    week
-                    __typename
-                }
-            }
       name
       id
       stream_name
       bacentaCount
-      aggregateServiceRecords(limit: 1, skip: 0) {
-        id
-        attendance
-        income
-        numberOfServices
-        week
-        __typename
-      }
-      services(limit: 1, skip: 0) {
-        id
-        createdAt
-        attendance
-        income
-        week
-        serviceDate {
-          date
-          __typename
-        }
-      }
       leader {
         id
         fullName
@@ -93,6 +64,52 @@ query getStreamGovernorships($id: ID!) {
       __typename
     }
     __typename
+  }
+}
+""".strip()
+
+WEEKDAY_SUB_CHURCHES_QUERY = """
+query WeekdaySubChurchesAtLevelStream(
+  $id: ID!
+  $startWeekKey: Int!
+  $endWeekKey: Int!
+  $targetLevel: String!
+) {
+  streams(where: { id: { eq: $id } }) {
+    id
+    subChurchesReportAtLevel(
+      startWeekKey: $startWeekKey
+      endWeekKey: $endWeekKey
+      targetLevel: $targetLevel
+    ) {
+      churchId
+      churchName
+      churchLevel
+      week
+      year
+      serviceAttendance
+      serviceIncome
+      numberOfServices
+    }
+  }
+}
+""".strip()
+
+COUNCIL_SERVICE_QUERY = """
+query councilServices($councilId: ID!) {
+  councils(where: { id: { eq: $councilId } }) {
+    id
+    name
+    services(limit: 20) {
+      id
+      week
+      noServiceReason
+      serviceDate {
+        date
+      }
+      attendance
+      income
+    }
   }
 }
 """.strip()
@@ -211,57 +228,122 @@ def fetch_governorships_for_stream(stream_id: str, access_token: str) -> List[Di
     return governorships
 
 
-def resolve_metrics(governorship: Dict[str, Any], current_week: int) -> Tuple[int, int, int, str]:
-    aggregate = (governorship.get("aggregateServiceRecords") or [None])[0]
-    if aggregate and _safe_int(aggregate.get("week"), -1) == current_week:
-        return (
-            _safe_int(aggregate.get("attendance")),
-            _safe_int(aggregate.get("income")),
-            _safe_int(aggregate.get("numberOfServices")),
-            "",
-        )
+def fetch_service_reports_for_stream(
+    stream_id: str, access_token: str, week_key: int, target_level: str = "Governorship"
+) -> Dict[str, Dict[str, Any]]:
+    payload = {
+        "query": WEEKDAY_SUB_CHURCHES_QUERY,
+        "variables": {
+            "id": stream_id,
+            "startWeekKey": week_key,
+            "endWeekKey": week_key,
+            "targetLevel": target_level,
+        },
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {access_token}",
+    }
 
-    service = (governorship.get("services") or [None])[0]
-    if service and _safe_int(service.get("week"), -1) == current_week:
-        return (
-            _safe_int(service.get("attendance")),
-            _safe_int(service.get("income")),
-            1,
-            "Joint Service",
-        )
+    try:
+        response = requests.post(GRAPHQL_URL, json=payload, headers=headers, timeout=45)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        print(f"[WARN] Stream {stream_id}: service report request failed: {exc}")
+        return {}
 
-    bacenta_matches = 0
-    bacenta_attendance_total = 0
-    bacenta_income_total = 0
+    body = response.json()
+    if body.get("errors"):
+        print(f"[WARN] Stream {stream_id}: service report GraphQL errors: {body['errors']}")
+        return {}
 
-    for bacenta in governorship.get("bacentas") or []:
-        bacenta_aggregate = (bacenta.get("aggregateServiceRecords") or [None])[0]
-        if not bacenta_aggregate:
+    streams = body.get("data", {}).get("streams") or []
+    if not streams:
+        return {}
+
+    reports = streams[0].get("subChurchesReportAtLevel") or []
+    return {report["churchId"]: report for report in reports if report.get("churchId")}
+
+
+def fetch_council_service_for_week(
+    council_id: str, access_token: str, week_key: int
+) -> Optional[Dict[str, Any]]:
+    payload = {"query": COUNCIL_SERVICE_QUERY, "variables": {"councilId": council_id}}
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {access_token}",
+    }
+
+    try:
+        response = requests.post(GRAPHQL_URL, json=payload, headers=headers, timeout=45)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        print(f"[WARN] Council {council_id}: council service request failed: {exc}")
+        return None
+
+    body = response.json()
+    if body.get("errors"):
+        print(f"[WARN] Council {council_id}: council service GraphQL errors: {body['errors']}")
+        return None
+
+    councils = body.get("data", {}).get("councils") or []
+    if not councils:
+        return None
+
+    for record in councils[0].get("services") or []:
+        if record.get("noServiceReason"):
             continue
-        if _safe_int(bacenta_aggregate.get("week"), -1) != current_week:
+        service_date = (record.get("serviceDate") or {}).get("date")
+        if not service_date:
             continue
+        try:
+            parsed_date = date.fromisoformat(service_date)
+        except ValueError:
+            continue
+        iso = parsed_date.isocalendar()
+        if iso.year * 100 + iso.week == week_key:
+            return record
 
-        bacenta_matches += 1
-        bacenta_attendance_total += _safe_int(bacenta_aggregate.get("attendance"))
-        bacenta_income_total += _safe_int(bacenta_aggregate.get("income"))
-
-    if bacenta_matches > 0:
-        return (
-            bacenta_attendance_total,
-            bacenta_income_total,
-            bacenta_matches,
-            "Bacenta Sum",
-        )
-
-    return (0, 0, 0, "")
+    return None
 
 
-def transform_governorship(governorship: Dict[str, Any], current_week: int) -> Dict[str, Any]:
+def build_council_service_row(record: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "governorship": "Council Service",
+        "governor": "",
+        "bacenta_count": None,
+        "attendance": _safe_int(record.get("attendance")),
+        "income_ghs": _safe_int(record.get("income")),
+        "number_of_services": 1,
+        "services_by_bacentas": "",
+        "services_not_held": "",
+        "comment": "Council Service",
+    }
+
+
+def resolve_metrics(
+    governorship: Dict[str, Any], service_reports: Dict[str, Dict[str, Any]]
+) -> Tuple[int, int, int, str]:
+    report = service_reports.get(governorship.get("id"))
+    if not report:
+        return (0, 0, 0, "")
+
+    return (
+        _safe_int(report.get("serviceAttendance")),
+        _safe_int(report.get("serviceIncome")),
+        _safe_int(report.get("numberOfServices")),
+        "",
+    )
+
+
+def transform_governorship(
+    governorship: Dict[str, Any], service_reports: Dict[str, Dict[str, Any]]
+) -> Dict[str, Any]:
     name = str(governorship.get("name") or "").strip()
     governor_name = str((governorship.get("leader") or {}).get("fullName") or "").strip()
     bacenta_count = _safe_int(governorship.get("bacentaCount"))
 
-    attendance, income_ghs, number_of_services, comment = resolve_metrics(governorship, current_week)
+    attendance, income_ghs, number_of_services, comment = resolve_metrics(governorship, service_reports)
     services_not_held = max(bacenta_count - number_of_services, 0)
 
     return {
@@ -278,10 +360,11 @@ def transform_governorship(governorship: Dict[str, Any], current_week: int) -> D
 
 
 def collect_rows_by_sheet(
-    stream_configs: Iterable[Tuple[str, str, str]], current_week: int
+    stream_configs: Iterable[Tuple[str, str, str]], week_key: int
 ) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, str]]:
     rows_by_sheet: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     council_leaders: Dict[str, str] = {}
+    council_service_rows: List[Tuple[str, Dict[str, Any]]] = []
 
     for stream_id, email, password in stream_configs:
         access_token = login_get_access_token(email, password)
@@ -289,6 +372,9 @@ def collect_rows_by_sheet(
 
         governorships = fetch_governorships_for_stream(stream_id, access_token)
         print(f"[INFO] Stream {stream_id}: fetched {len(governorships)} governorship(s)")
+
+        service_reports = fetch_service_reports_for_stream(stream_id, access_token, week_key)
+        print(f"[INFO] Stream {stream_id}: fetched {len(service_reports)} service report(s)")
 
         for governorship in governorships:
             council_name = str((governorship.get("council") or {}).get("name") or "").strip()
@@ -305,11 +391,27 @@ def collect_rows_by_sheet(
             if council_name and council_name not in council_leaders:
                 council_leaders[council_name] = council_leader
 
-            rows_by_sheet[council_name].append(transform_governorship(governorship, current_week))
+            rows_by_sheet[council_name].append(transform_governorship(governorship, service_reports))
+
+        council_level_reports = fetch_service_reports_for_stream(
+            stream_id, access_token, week_key, target_level="Council"
+        )
+        for council_id, council_report in council_level_reports.items():
+            council_name = str(council_report.get("churchName") or "").strip()
+            if not council_name:
+                continue
+
+            council_service = fetch_council_service_for_week(council_id, access_token, week_key)
+            if council_service:
+                print(f"[INFO] Council '{council_name}': found a council-level service for the week")
+                council_service_rows.append((council_name, build_council_service_row(council_service)))
 
     for sheet_name, rows in rows_by_sheet.items():
         rows.sort(key=lambda item: _normalize(item.get("governorship")))
         print(f"[INFO] Prepared {len(rows)} row(s) for sheet '{sheet_name}'")
+
+    for council_name, row in council_service_rows:
+        rows_by_sheet[council_name].append(row)
 
     return rows_by_sheet, council_leaders
 
@@ -347,8 +449,7 @@ def write_rows_to_sheet(ws: Worksheet, rows: List[Dict[str, Any]]) -> int:
 
 def create_summary_sheet(
     wb: Workbook,
-    sheet_name_map: Dict[str, str],
-    total_rows_by_sheet: Dict[str, int],
+    rows_by_sheet: Dict[str, List[Dict[str, Any]]],
     council_leaders: Dict[str, str],
 ) -> None:
     summary_ws = wb.create_sheet(title="Summary", index=0)
@@ -361,19 +462,15 @@ def create_summary_sheet(
     summary_ws.cell(row=2, column=6, value="No. Of Services")
 
     row_idx = 3
-    for council_name in sorted(sheet_name_map.keys(), key=_normalize):
-        detail_sheet = sheet_name_map[council_name]
-        detail_total_row = total_rows_by_sheet.get(detail_sheet)
-        if not detail_total_row:
-            continue
+    for council_name in sorted(rows_by_sheet.keys(), key=_normalize):
+        rows = rows_by_sheet.get(council_name, [])
 
-        escaped_sheet = detail_sheet.replace("'", "''")
         summary_ws.cell(row=row_idx, column=1, value=council_leaders.get(council_name, ""))
         summary_ws.cell(row=row_idx, column=2, value=council_name)
-        summary_ws.cell(row=row_idx, column=3, value=f"='{escaped_sheet}'!C{detail_total_row}")
-        summary_ws.cell(row=row_idx, column=4, value=f"='{escaped_sheet}'!D{detail_total_row}")
-        summary_ws.cell(row=row_idx, column=5, value=f"='{escaped_sheet}'!E{detail_total_row}")
-        summary_ws.cell(row=row_idx, column=6, value=f"='{escaped_sheet}'!F{detail_total_row}")
+        summary_ws.cell(row=row_idx, column=3, value=sum(_safe_int(row["bacenta_count"]) for row in rows))
+        summary_ws.cell(row=row_idx, column=4, value=sum(_safe_int(row["attendance"]) for row in rows))
+        summary_ws.cell(row=row_idx, column=5, value=sum(_safe_int(row["income_ghs"]) for row in rows))
+        summary_ws.cell(row=row_idx, column=6, value=sum(_safe_int(row["number_of_services"]) for row in rows))
         row_idx += 1
 
 
@@ -388,6 +485,12 @@ def parse_args() -> argparse.Namespace:
         "--output",
         default="Midweek_Data_updated.xlsx",
         help="Path to save updated workbook",
+    )
+    parser.add_argument(
+        "--weeks-ago",
+        type=int,
+        default=0,
+        help="Pull the report for N weeks before the current ISO week (e.g. 1 for last week)",
     )
     return parser.parse_args()
 
@@ -412,10 +515,12 @@ def main() -> None:
     if not stream_configs:
         raise RuntimeError("No stream IDs configured. Set STREAM_ID_1/2/3 environment variables.")
 
-    current_week = date.today().isocalendar().week
-    print(f"[INFO] Current ISO week: {current_week}")
+    target_date = date.today() - timedelta(weeks=args.weeks_ago)
+    iso_calendar = target_date.isocalendar()
+    week_key = iso_calendar.year * 100 + iso_calendar.week
+    print(f"[INFO] Target ISO week: {iso_calendar.week} (weekKey={week_key})")
 
-    rows_by_sheet, council_leaders = collect_rows_by_sheet(stream_configs, current_week)
+    rows_by_sheet, council_leaders = collect_rows_by_sheet(stream_configs, week_key)
 
     workbook = Workbook()
     # Remove the auto-created default sheet so output has only generated tabs.
@@ -423,20 +528,16 @@ def main() -> None:
     workbook.remove(default_sheet)
 
     used_sheet_titles: set[str] = set()
-    sheet_name_map: Dict[str, str] = {}
-    total_rows_by_sheet: Dict[str, int] = {}
     written_counts: Dict[str, int] = {}
 
     for council_name in sorted(rows_by_sheet.keys(), key=_normalize):
         rows = rows_by_sheet.get(council_name, [])
         sheet_name = sanitize_sheet_title(council_name, used_sheet_titles)
-        sheet_name_map[council_name] = sheet_name
         ws = workbook.create_sheet(title=sheet_name)
-        total_row = write_rows_to_sheet(ws, rows)
-        total_rows_by_sheet[sheet_name] = total_row
+        write_rows_to_sheet(ws, rows)
         written_counts[sheet_name] = len(rows)
 
-    create_summary_sheet(workbook, sheet_name_map, total_rows_by_sheet, council_leaders)
+    create_summary_sheet(workbook, rows_by_sheet, council_leaders)
 
     workbook.save(output_path)
 
