@@ -278,12 +278,15 @@ def transform_governorship(governorship: Dict[str, Any], current_week: int) -> D
 
 
 def collect_rows_by_sheet(
-    stream_ids: Iterable[str], access_token: str, current_week: int
+    stream_configs: Iterable[Tuple[str, str, str]], current_week: int
 ) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, str]]:
     rows_by_sheet: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     council_leaders: Dict[str, str] = {}
 
-    for stream_id in stream_ids:
+    for stream_id, email, password in stream_configs:
+        access_token = login_get_access_token(email, password)
+        print(f"[INFO] Stream {stream_id}: login successful for {email}")
+
         governorships = fetch_governorships_for_stream(stream_id, access_token)
         print(f"[INFO] Stream {stream_id}: fetched {len(governorships)} governorship(s)")
 
@@ -396,25 +399,23 @@ def main() -> None:
 
     load_dotenv(Path(".env"))
 
-    email = get_required_env("FLC_EMAIL")
-    password = get_required_env("FLC_PASSWORD")
+    stream_defaults = {1: DEFAULT_STREAM_1, 2: DEFAULT_STREAM_2, 3: DEFAULT_STREAM_3}
+    stream_configs: List[Tuple[str, str, str]] = []
+    for index, default_stream_id in stream_defaults.items():
+        stream_id = os.environ.get(f"STREAM_ID_{index}", default_stream_id).strip()
+        if not stream_id:
+            continue
+        email = get_required_env(f"FLC_EMAIL_{index}")
+        password = get_required_env(f"FLC_PASSWORD_{index}")
+        stream_configs.append((stream_id, email, password))
 
-    stream_ids = [
-        os.environ.get("STREAM_ID_1", DEFAULT_STREAM_1).strip(),
-        os.environ.get("STREAM_ID_2", DEFAULT_STREAM_2).strip(),
-        os.environ.get("STREAM_ID_3", DEFAULT_STREAM_3).strip(),
-    ]
-    stream_ids = [stream_id for stream_id in stream_ids if stream_id]
-    if not stream_ids:
+    if not stream_configs:
         raise RuntimeError("No stream IDs configured. Set STREAM_ID_1/2/3 environment variables.")
 
     current_week = date.today().isocalendar().week
     print(f"[INFO] Current ISO week: {current_week}")
 
-    access_token = login_get_access_token(email, password)
-    print("[INFO] Login successful; access token acquired")
-
-    rows_by_sheet, council_leaders = collect_rows_by_sheet(stream_ids, access_token, current_week)
+    rows_by_sheet, council_leaders = collect_rows_by_sheet(stream_configs, current_week)
 
     workbook = Workbook()
     # Remove the auto-created default sheet so output has only generated tabs.

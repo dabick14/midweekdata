@@ -35,10 +35,14 @@ jobs:
 
       - name: Run updater script
         env:
-          FLC_EMAIL: ${{ secrets.FLC_EMAIL }}
-          FLC_PASSWORD: ${{ secrets.FLC_PASSWORD }}
+          FLC_EMAIL_1: ${{ secrets.FLC_EMAIL_1 }}
+          FLC_PASSWORD_1: ${{ secrets.FLC_PASSWORD_1 }}
           STREAM_ID_1: ${{ secrets.STREAM_ID_1 }}
+          FLC_EMAIL_2: ${{ secrets.FLC_EMAIL_2 }}
+          FLC_PASSWORD_2: ${{ secrets.FLC_PASSWORD_2 }}
           STREAM_ID_2: ${{ secrets.STREAM_ID_2 }}
+          FLC_EMAIL_3: ${{ secrets.FLC_EMAIL_3 }}
+          FLC_PASSWORD_3: ${{ secrets.FLC_PASSWORD_3 }}
           STREAM_ID_3: ${{ secrets.STREAM_ID_3 }}
         run: python update_midweek_data.py --input Midweek_Data.xlsx --output Midweek_Data_updated.xlsx
 
