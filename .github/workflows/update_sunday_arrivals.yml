@@ -1,0 +1,131 @@
+name: Update Sunday Arrivals Data
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 15 * * 0'
+
+permissions:
+  contents: write
+  id-token: write # REQUIRED: This allows the "handshake" with Google Cloud
+
+jobs:
+  update-sunday-arrivals:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - id: 'auth'
+        name: 'Authenticate to Google Cloud'
+        uses: 'google-github-actions/auth@v2'
+        with:
+          workload_identity_provider: 'projects/355623912921/locations/global/workloadIdentityPools/github-pool-v3/providers/github-provider'
+          service_account: 'github-deployer@psychic-nuance-495210-f1.iam.gserviceaccount.com'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests openpyxl google-api-python-client google-auth
+
+      - name: Run updater script
+        env:
+          FLC_EMAIL_1: ${{ secrets.FLC_EMAIL_1 }}
+          FLC_PASSWORD_1: ${{ secrets.FLC_PASSWORD_1 }}
+          STREAM_ID_1: ${{ secrets.STREAM_ID_1 }}
+          FLC_EMAIL_2: ${{ secrets.FLC_EMAIL_2 }}
+          FLC_PASSWORD_2: ${{ secrets.FLC_PASSWORD_2 }}
+          STREAM_ID_2: ${{ secrets.STREAM_ID_2 }}
+          FLC_EMAIL_3: ${{ secrets.FLC_EMAIL_3 }}
+          FLC_PASSWORD_3: ${{ secrets.FLC_PASSWORD_3 }}
+          STREAM_ID_3: ${{ secrets.STREAM_ID_3 }}
+        run: python update_sunday_arrivals.py --output Sunday_Arrivals_updated.xlsx
+
+      - name: Create dated workbook copy
+        if: ${{ hashFiles('Sunday_Arrivals_updated.xlsx') != '' }}
+        run: |
+          DATED_FILE="Sunday_Arrivals_$(date -u +%F).xlsx"
+          cp Sunday_Arrivals_updated.xlsx "$DATED_FILE"
+          echo "DATED_FILE=$DATED_FILE" >> "$GITHUB_ENV"
+
+      - name: Upload dated workbook to Google Drive
+        if: ${{ hashFiles('Sunday_Arrivals_updated.xlsx') != '' }}
+        env:
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          DATED_FILE: ${{ env.DATED_FILE }}
+        run: |
+          python - <<'PY'
+          import os
+          import google.auth
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+          from googleapiclient.errors import HttpError
+
+          folder_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "").strip()
+          file_name = os.environ["DATED_FILE"]
+
+          if not folder_id:
+            raise RuntimeError(
+              "GOOGLE_DRIVE_FOLDER_ID is empty. Set the repository secret GOOGLE_DRIVE_FOLDER_ID."
+            )
+
+          credentials, project = google.auth.default(
+              scopes=["https://www.googleapis.com/auth/drive"]
+          )
+
+          service = build("drive", "v3", credentials=credentials)
+
+          try:
+            service.files().get(
+              fileId=folder_id,
+              fields="id,name,driveId",
+              supportsAllDrives=True,
+            ).execute()
+          except HttpError as exc:
+            raise RuntimeError(
+              "Cannot access GOOGLE_DRIVE_FOLDER_ID with current GitHub auth service account. "
+              "Confirm folder id is correct and shared with the auth service account."
+            ) from exc
+
+          metadata = {
+              "name": file_name,
+              "parents": [folder_id],
+          }
+          media = MediaFileUpload(
+              file_name,
+              mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          )
+          created = (
+              service.files()
+              .create(
+                  body=metadata,
+                  media_body=media,
+                  fields="id,name",
+                  supportsAllDrives=True,
+              )
+              .execute()
+          )
+          print(f"Uploaded {created['name']} to Google Drive with file id {created['id']}")
+          PY
+
+      - name: Replace source workbook with updated workbook
+        run: |
+          if [ -f Sunday_Arrivals_updated.xlsx ]; then
+            mv Sunday_Arrivals_updated.xlsx Sunday_Arrivals.xlsx
+          fi
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Sunday_Arrivals.xlsx
+          if git diff --cached --quiet; then
+            echo "No workbook changes to commit"
+            exit 0
+          fi
+          git commit -m "chore: update sunday arrivals workbook"
+          git push
