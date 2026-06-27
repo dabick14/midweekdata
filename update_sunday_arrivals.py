@@ -42,6 +42,9 @@ query BussingSubChurchesAtLevelCouncil(
   councils(where: { id: { eq: $id } }) {
     id
     name
+    leader {
+      fullName
+    }
     subChurchesReportAtLevel(
       startWeekKey: $startWeekKey
       endWeekKey: $endWeekKey
@@ -62,7 +65,7 @@ query BussingSubChurchesAtLevelCouncil(
 
 def fetch_bussing_for_council(
     council_id: str, access_token: str, start_week_key: int, end_week_key: int
-) -> List[Dict[str, Any]]:
+) -> Tuple[str, List[Dict[str, Any]]]:
     payload = {
         "query": BUSSING_COUNCIL_QUERY,
         "variables": {
@@ -82,18 +85,20 @@ def fetch_bussing_for_council(
         response.raise_for_status()
     except requests.RequestException as exc:
         print(f"[WARN] Council {council_id}: bussing request failed: {exc}")
-        return []
+        return "", []
 
     body = response.json()
     if body.get("errors"):
         print(f"[WARN] Council {council_id}: bussing GraphQL errors: {body['errors']}")
-        return []
+        return "", []
 
     councils = body.get("data", {}).get("councils") or []
     if not councils:
-        return []
+        return "", []
 
-    return councils[0].get("subChurchesReportAtLevel") or []
+    leader_name = str((councils[0].get("leader") or {}).get("fullName") or "").strip()
+    entries = councils[0].get("subChurchesReportAtLevel") or []
+    return leader_name, entries
 
 
 def build_governorship_rows(
@@ -148,6 +153,7 @@ def write_governorship_sheet(
         ws.cell(row=row_idx, column=4, value=row["curr"])
         row_idx += 1
 
+    ws.cell(row=row_idx, column=1, value="TOTAL")
     ws.cell(row=row_idx, column=3, value=sum(row["prev"] for row in rows))
     ws.cell(row=row_idx, column=4, value=sum(row["curr"] for row in rows))
 
@@ -171,12 +177,15 @@ def collect_council_data(
             if not council_name:
                 continue
 
-            entries = fetch_bussing_for_council(council_id, access_token, prev_week_key, curr_week_key)
+            leader_name, entries = fetch_bussing_for_council(
+                council_id, access_token, prev_week_key, curr_week_key
+            )
             rows = build_governorship_rows(entries, prev_week_key, curr_week_key)
             councils.append(
                 {
                     "stream_index": stream_index,
                     "name": council_name,
+                    "leader": leader_name,
                     "rows": rows,
                     "prev_total": sum(row["prev"] for row in rows),
                     "curr_total": sum(row["curr"] for row in rows),
@@ -191,8 +200,10 @@ def write_rollup_sheet(
     wb: Workbook, councils: List[Dict[str, Any]], prev_label: str, curr_label: str
 ) -> None:
     ws: Worksheet = wb.create_sheet(title="Rollup", index=0)
-    ws.cell(row=1, column=1, value=prev_label)
-    ws.cell(row=1, column=2, value=curr_label)
+    ws.cell(row=1, column=1, value="Council")
+    ws.cell(row=1, column=2, value="Leader")
+    ws.cell(row=1, column=3, value=prev_label)
+    ws.cell(row=1, column=4, value=curr_label)
 
     councils_by_group: Dict[str, List[Dict[str, Any]]] = {}
     for council in councils:
@@ -207,22 +218,23 @@ def write_rollup_sheet(
         group_curr = 0
         for council in sorted(councils_by_group[label], key=lambda c: _normalize(c["name"])):
             ws.cell(row=row_idx, column=1, value=council["name"])
-            ws.cell(row=row_idx, column=2, value=council["prev_total"])
-            ws.cell(row=row_idx, column=3, value=council["curr_total"])
+            ws.cell(row=row_idx, column=2, value=council["leader"])
+            ws.cell(row=row_idx, column=3, value=council["prev_total"])
+            ws.cell(row=row_idx, column=4, value=council["curr_total"])
             group_prev += council["prev_total"]
             group_curr += council["curr_total"]
             row_idx += 1
 
         ws.cell(row=row_idx, column=1, value=f"{label} Total")
-        ws.cell(row=row_idx, column=2, value=group_prev)
-        ws.cell(row=row_idx, column=3, value=group_curr)
+        ws.cell(row=row_idx, column=3, value=group_prev)
+        ws.cell(row=row_idx, column=4, value=group_curr)
         row_idx += 2
         grand_prev += group_prev
         grand_curr += group_curr
 
     ws.cell(row=row_idx, column=1, value="Grand Total")
-    ws.cell(row=row_idx, column=2, value=grand_prev)
-    ws.cell(row=row_idx, column=3, value=grand_curr)
+    ws.cell(row=row_idx, column=3, value=grand_prev)
+    ws.cell(row=row_idx, column=4, value=grand_curr)
 
 
 def parse_args() -> argparse.Namespace:
